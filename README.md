@@ -12,14 +12,19 @@ npm install -g .
 
 ```bash
 insighta login --api https://your-backend.up.railway.app
-insighta callback --code <code> --state <state>
-insighta me
-insighta profiles --page 1 --limit 10
-insighta search "young males from nigeria"
-insighta create "Ada"
-insighta delete <profile-id>
-insighta export --out profiles.csv
 insighta logout
+insighta whoami
+
+insighta profiles list
+insighta profiles list --gender male
+insighta profiles list --country NG --age-group adult
+insighta profiles list --min-age 25 --max-age 40
+insighta profiles list --sort-by age --order desc --page 2 --limit 20
+insighta profiles get <id>
+insighta profiles search "young males from nigeria"
+insighta profiles create --name "Harriet Tubman"
+insighta profiles export --format csv
+insighta profiles export --format csv --gender male --country NG
 ```
 
-Credentials are stored at `~/.insighta/credentials.json`. Access tokens are refreshed automatically using the backend refresh endpoint.
+Credentials are stored at `~/.insighta/credentials.json`. Access tokens are refreshed automatically using the backend refresh endpoint. API calls send `X-API-Version: 1`.

@@ -6,6 +6,7 @@ const path = require("path");
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
+const { execFile } = require("child_process");
 
 const CONFIG_DIR = path.join(os.homedir(), ".insighta");
 const CREDENTIALS_PATH = path.join(CONFIG_DIR, "credentials.json");
@@ -28,6 +29,12 @@ function removeCredentials() {
   if (fs.existsSync(CREDENTIALS_PATH)) fs.unlinkSync(CREDENTIALS_PATH);
 }
 
+function openBrowser(url) {
+  const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  execFile(command, args, { windowsHide: true }, () => {});
+}
+
 function request(method, urlString, { token, body, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
@@ -38,7 +45,7 @@ function request(method, urlString, { token, body, headers = {} } = {}) {
       {
         method,
         headers: {
-          Accept: "application/json",
+          Accept: headers.Accept || "application/json",
           ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...headers,
@@ -52,8 +59,7 @@ function request(method, urlString, { token, body, headers = {} } = {}) {
           const contentType = res.headers["content-type"] || "";
           const data = contentType.includes("application/json") && text ? JSON.parse(text) : text;
           if (res.statusCode >= 400) {
-            const message = data && data.message ? data.message : `Request failed with ${res.statusCode}`;
-            reject(new Error(message));
+            reject(new Error(data && data.message ? data.message : `Request failed with ${res.statusCode}`));
             return;
           }
           resolve(data);
@@ -71,7 +77,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const item = argv[i];
     if (item.startsWith("--")) {
-      const key = item.slice(2);
+      const key = item.slice(2).replace(/-/g, "_");
       const next = argv[i + 1];
       if (!next || next.startsWith("--")) args[key] = true;
       else {
@@ -89,22 +95,36 @@ function apiUrl(credentials, args) {
   return (args.api || credentials.apiUrl || DEFAULT_API_URL).replace(/\/$/, "");
 }
 
+function normalizeAuth(data) {
+  return {
+    accessToken: data.access_token || data.accessToken || data.data?.accessToken,
+    refreshToken: data.refresh_token || data.refreshToken || data.data?.refreshToken,
+    expiresIn: data.expires_in || data.expiresIn || data.data?.expiresIn,
+    user: data.user || data.data?.user,
+  };
+}
+
 async function refreshIfNeeded(credentials) {
   if (!credentials.refreshToken) return credentials;
-  const expiresAt = credentials.expiresAt || 0;
-  if (Date.now() < expiresAt - 30_000) return credentials;
-  const data = await request("POST", `${credentials.apiUrl}/auth/refresh`, {
-    body: { refresh_token: credentials.refreshToken },
-  });
-  const next = {
-    ...credentials,
-    accessToken: data.data.accessToken,
-    refreshToken: data.data.refreshToken,
-    user: data.data.user,
-    expiresAt: Date.now() + data.data.expiresIn * 1000,
-  };
-  writeCredentials(next);
-  return next;
+  if (Date.now() < (credentials.expiresAt || 0) - 20_000) return credentials;
+  try {
+    const data = await request("POST", `${credentials.apiUrl}/auth/refresh`, {
+      body: { refresh_token: credentials.refreshToken },
+    });
+    const auth = normalizeAuth(data);
+    const next = {
+      ...credentials,
+      accessToken: auth.accessToken,
+      refreshToken: auth.refreshToken,
+      user: auth.user || credentials.user,
+      expiresAt: Date.now() + Number(auth.expiresIn || 180) * 1000,
+    };
+    writeCredentials(next);
+    return next;
+  } catch {
+    removeCredentials();
+    throw new Error("Session expired. Run `insighta login` again.");
+  }
 }
 
 async function authedRequest(method, pathName, { args, body, raw = false } = {}) {
@@ -115,30 +135,34 @@ async function authedRequest(method, pathName, { args, body, raw = false } = {})
   return request(method, `${credentials.apiUrl}${pathName}`, {
     token: credentials.accessToken,
     body,
-    headers: raw ? { Accept: "text/csv" } : {},
+    headers: { "X-API-Version": "1", ...(raw ? { Accept: "text/csv" } : {}) },
   });
 }
 
+function buildProfileQuery(args) {
+  const query = new URLSearchParams();
+  const aliases = { country: "country_id", age_group: "age_group", sort_by: "sort_by" };
+  for (const key of ["page", "limit", "gender", "country", "country_id", "age_group", "min_age", "max_age", "sort_by", "order"]) {
+    if (args[key]) query.set(aliases[key] || key, args[key]);
+  }
+  return query.toString();
+}
+
+function spinner(message) {
+  process.stdout.write(`${message}...`);
+  return () => process.stdout.write(" done\n");
+}
+
 function formatTable(rows) {
-  if (!rows.length) {
+  if (!rows || !rows.length) {
     console.log("No profiles found.");
     return;
   }
-  const widths = {
-    name: Math.max(4, ...rows.map((row) => String(row.name).length)),
-    gender: 6,
-    age: 3,
-    country: Math.max(7, ...rows.map((row) => String(row.country_id || "").length)),
-  };
-  console.log(
-    `${"NAME".padEnd(widths.name)}  GENDER  AGE  ${"COUNTRY".padEnd(widths.country)}  CREATED`
-  );
+  const columns = ["name", "gender", "age", "age_group", "country_id", "created_at"];
+  const widths = Object.fromEntries(columns.map((column) => [column, Math.max(column.length, ...rows.map((row) => String(row[column] || "").length))]));
+  console.log(columns.map((column) => column.toUpperCase().padEnd(widths[column])).join("  "));
   for (const row of rows) {
-    console.log(
-      `${String(row.name).padEnd(widths.name)}  ${String(row.gender).padEnd(widths.gender)}  ${String(row.age).padEnd(
-        widths.age
-      )}  ${String(row.country_id || "").padEnd(widths.country)}  ${row.created_at}`
-    );
+    console.log(columns.map((column) => String(row[column] || "").padEnd(widths[column])).join("  "));
   }
 }
 
@@ -147,120 +171,136 @@ function usage() {
 
 Usage:
   insighta login [--api http://localhost:3000]
-  insighta callback --code <code> --state <state>
-  insighta me
-  insighta profiles [--page 1] [--limit 10] [--gender male] [--country_id NG]
-  insighta search "young males from nigeria"
-  insighta create "Ada"
-  insighta delete <profile-id>
-  insighta export [--out profiles.csv]
   insighta logout
+  insighta whoami
+
+  insighta profiles list [--gender male] [--country NG] [--age-group adult]
+  insighta profiles list [--min-age 25] [--max-age 40] [--sort-by age] [--order desc]
+  insighta profiles get <id>
+  insighta profiles search "young males from nigeria"
+  insighta profiles create --name "Harriet Tubman"
+  insighta profiles export --format csv [--gender male] [--country NG]
 `);
+}
+
+async function login(args, baseUrl) {
+  const server = http.createServer();
+  const callback = await new Promise((resolve, reject) => {
+    server.on("request", (req, res) => {
+      const url = new URL(req.url, "http://127.0.0.1");
+      if (url.pathname !== "/callback") {
+        res.writeHead(404).end("Not found");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("Insighta login complete. You can close this tab.");
+      resolve({ code: url.searchParams.get("code"), state: url.searchParams.get("state") });
+      server.close();
+    });
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", async () => {
+      try {
+        const port = server.address().port;
+        const redirectUri = `http://127.0.0.1:${port}/callback`;
+        const data = await request("GET", `${baseUrl}/auth/github?interface=cli&redirect_uri=${encodeURIComponent(redirectUri)}`);
+        writeCredentials({ apiUrl: baseUrl, state: data.data.state, codeVerifier: data.data.code_verifier });
+        console.log("Opening GitHub OAuth...");
+        console.log(data.data.authorize_url);
+        openBrowser(data.data.authorize_url);
+      } catch (error) {
+        server.close();
+        reject(error);
+      }
+    });
+  });
+
+  const credentials = readCredentials();
+  if (!callback.code || callback.state !== credentials.state) throw new Error("Invalid OAuth callback state.");
+  const data = await request("POST", `${baseUrl}/auth/github/callback`, {
+    body: { code: callback.code, state: callback.state, code_verifier: credentials.codeVerifier },
+  });
+  const auth = normalizeAuth(data);
+  writeCredentials({
+    apiUrl: baseUrl,
+    accessToken: auth.accessToken,
+    refreshToken: auth.refreshToken,
+    expiresAt: Date.now() + Number(auth.expiresIn || 180) * 1000,
+    user: auth.user,
+  });
+  console.log(`Logged in as @${auth.user.login || auth.user.username}`);
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const command = args._[0];
   const credentials = readCredentials();
   const baseUrl = apiUrl(credentials, args);
+  const [command, group, actionOrId] = args._;
 
-  if (!command || command === "help" || command === "--help") {
-    usage();
-    return;
-  }
-
-  if (command === "login") {
-    const data = await request("GET", `${baseUrl}/auth/github/start?interface=cli`);
-    writeCredentials({
-      apiUrl: baseUrl,
-      state: data.data.state,
-      codeVerifier: data.data.code_verifier,
-      redirectUri: data.data.redirect_uri,
-    });
-    console.log("Open this URL in your browser:");
-    console.log(data.data.authorize_url);
-    console.log("\nThen run:");
-    console.log("insighta callback --code <code> --state <state>");
-    return;
-  }
-
-  if (command === "callback") {
-    if (!args.code || !args.state) throw new Error("callback requires --code and --state");
-    if (args.state !== credentials.state) throw new Error("OAuth state does not match the stored login attempt.");
-    const data = await request("POST", `${baseUrl}/auth/github/callback`, {
-      body: { code: args.code, state: args.state, code_verifier: credentials.codeVerifier },
-    });
-    writeCredentials({
-      apiUrl: baseUrl,
-      accessToken: data.data.accessToken,
-      refreshToken: data.data.refreshToken,
-      expiresAt: Date.now() + data.data.expiresIn * 1000,
-      user: data.data.user,
-    });
-    console.log(`Logged in as ${data.data.user.login} (${data.data.user.role}).`);
-    return;
-  }
-
+  if (!command || command === "help" || command === "--help") return usage();
+  if (command === "login") return login(args, baseUrl);
   if (command === "logout") {
-    if (credentials.refreshToken) {
-      await request("POST", `${baseUrl}/auth/logout`, { body: { refresh_token: credentials.refreshToken } }).catch(
-        () => {}
-      );
-    }
+    if (credentials.refreshToken) await request("POST", `${baseUrl}/auth/logout`, { body: { refresh_token: credentials.refreshToken } }).catch(() => {});
     removeCredentials();
     console.log("Logged out.");
     return;
   }
-
-  if (command === "me") {
+  if (command === "whoami" || command === "me") {
+    const done = spinner("Fetching account");
     const data = await authedRequest("GET", "/api/v1/session/me", { args });
+    done();
     console.log(JSON.stringify(data.data.user, null, 2));
     return;
   }
 
-  if (command === "profiles") {
-    const query = new URLSearchParams();
-    for (const key of ["page", "limit", "gender", "age_group", "country_id", "min_age", "max_age", "sort_by", "order"]) {
-      if (args[key]) query.set(key, args[key]);
-    }
-    const data = await authedRequest("GET", `/api/v1/profiles?${query.toString()}`, { args });
+  if (command !== "profiles") return usage();
+
+  if (group === "list" || !group) {
+    const done = spinner("Fetching profiles");
+    const data = await authedRequest("GET", `/api/v1/profiles?${buildProfileQuery(args)}`, { args });
+    done();
     formatTable(data.data);
-    console.log(`\nPage ${data.pagination.page}/${Math.max(data.pagination.total_pages, 1)} (${data.pagination.total} total)`);
+    console.log(`\nPage ${data.page}/${Math.max(data.total_pages, 1)} (${data.total} total)`);
     return;
   }
 
-  if (command === "search") {
-    const q = args._.slice(1).join(" ");
-    if (!q) throw new Error("search requires a query, e.g. insighta search \"young males\"");
-    const data = await authedRequest("GET", `/api/v1/profiles/search?q=${encodeURIComponent(q)}`, { args });
-    formatTable(data.data);
-    return;
-  }
-
-  if (command === "create") {
-    const name = args._.slice(1).join(" ");
-    if (!name) throw new Error("create requires a name");
-    const data = await authedRequest("POST", "/api/v1/profiles", { args, body: { name } });
+  if (group === "get") {
+    if (!actionOrId) throw new Error("profiles get requires an id");
+    const done = spinner("Fetching profile");
+    const data = await authedRequest("GET", `/api/v1/profiles/${encodeURIComponent(actionOrId)}`, { args });
+    done();
     console.log(JSON.stringify(data.data, null, 2));
     return;
   }
 
-  if (command === "delete") {
-    const id = args._[1];
-    if (!id) throw new Error("delete requires a profile id");
-    await authedRequest("DELETE", `/api/v1/profiles/${encodeURIComponent(id)}`, { args });
-    console.log("Profile deleted.");
+  if (group === "search") {
+    const q = args._.slice(2).join(" ");
+    if (!q) throw new Error("profiles search requires a query");
+    const done = spinner("Searching profiles");
+    const data = await authedRequest("GET", `/api/v1/profiles/search?q=${encodeURIComponent(q)}`, { args });
+    done();
+    formatTable(data.data);
     return;
   }
 
-  if (command === "export") {
-    const csv = await authedRequest("GET", "/api/v1/profiles/export", { args, raw: true });
-    if (args.out) {
-      fs.writeFileSync(args.out, csv);
-      console.log(`Exported to ${args.out}`);
-    } else {
-      process.stdout.write(csv);
-    }
+  if (group === "create") {
+    if (!args.name) throw new Error('profiles create requires --name "Harriet Tubman"');
+    const done = spinner("Creating profile");
+    const data = await authedRequest("POST", "/api/v1/profiles", { args, body: { name: args.name } });
+    done();
+    console.log(JSON.stringify(data.data, null, 2));
+    return;
+  }
+
+  if (group === "export") {
+    const format = args.format || "csv";
+    const query = buildProfileQuery(args);
+    const separator = query ? "&" : "";
+    const done = spinner("Exporting profiles");
+    const csv = await authedRequest("GET", `/api/v1/profiles/export?${query}${separator}format=${format}`, { args, raw: true });
+    const filename = args.out || `profiles_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+    fs.writeFileSync(path.resolve(process.cwd(), filename), csv);
+    done();
+    console.log(`Saved ${filename}`);
     return;
   }
 
