@@ -1,0 +1,9 @@
+{
+  "name": "ArthurThaCode/Insighta-cli",
+  "version": "1.0.0",
+  "description": "",
+  "bin": {
+    "insighta": "./bin/insighta.js"
+	}
+  "type": "commonjs",
+}
