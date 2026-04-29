@@ -1,9 +1,15 @@
-{
-  "name": "ArthurThaCode/Insighta-cli",
+﻿{
+  "name": "insighta-cli",
   "version": "1.0.0",
-  "description": "",
+  "description": "Command line interface for Insighta Labs+",
   "bin": {
     "insighta": "./bin/insighta.js"
-	}
-  "type": "commonjs",
+  },
+  "scripts": {
+    "check": "node --check bin/insighta.js"
+  },
+  "keywords": ["insighta", "cli"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
 }
