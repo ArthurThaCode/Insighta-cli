@@ -11,6 +11,8 @@ const { execFile } = require("child_process");
 const CONFIG_DIR = path.join(os.homedir(), ".insighta");
 const CREDENTIALS_PATH = path.join(CONFIG_DIR, "credentials.json");
 const DEFAULT_API_URL = process.env.INSIGHTA_API_URL || "http://localhost:3000";
+const CALLBACK_HOST = "127.0.0.1";
+const CALLBACK_PORT = Number(process.env.INSIGHTA_CLI_CALLBACK_PORT || 53682);
 
 function readCredentials() {
   try {
@@ -198,15 +200,14 @@ async function login(args, baseUrl) {
       server.close();
     });
     server.on("error", reject);
-    server.listen(0, "127.0.0.1", async () => {
+    server.listen(CALLBACK_PORT, CALLBACK_HOST, async () => {
       try {
-        const port = server.address().port;
-        const redirectUri = `http://127.0.0.1:${port}/callback`;
+        const redirectUri = `http://${CALLBACK_HOST}:${CALLBACK_PORT}/callback`;
         const data = await request("GET", `${baseUrl}/auth/github?interface=cli&redirect_uri=${encodeURIComponent(redirectUri)}`);
         writeCredentials({ apiUrl: baseUrl, state: data.data.state, codeVerifier: data.data.code_verifier });
         console.log("Opening GitHub OAuth...");
         console.log(data.data.authorize_url);
-        openBrowser(data.data.authorize_url);
+        if (!args.no_open) openBrowser(data.data.authorize_url);
       } catch (error) {
         server.close();
         reject(error);
