@@ -3,6 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
@@ -72,6 +73,12 @@ function request(method, urlString, { token, body, headers = {} } = {}) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+function generatePkce() {
+  const verifier = crypto.randomBytes(48).toString("base64url");
+  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
 }
 
 function parseArgs(argv) {
@@ -186,6 +193,7 @@ Usage:
 }
 
 async function login(args, baseUrl) {
+  const pkce = generatePkce();
   const server = http.createServer();
   const callback = await new Promise((resolve, reject) => {
     server.on("request", (req, res) => {
@@ -203,8 +211,8 @@ async function login(args, baseUrl) {
     server.listen(CALLBACK_PORT, CALLBACK_HOST, async () => {
       try {
         const redirectUri = `http://${CALLBACK_HOST}:${CALLBACK_PORT}/callback`;
-        const data = await request("GET", `${baseUrl}/auth/github?interface=cli&redirect_uri=${encodeURIComponent(redirectUri)}`);
-        writeCredentials({ apiUrl: baseUrl, state: data.data.state, codeVerifier: data.data.code_verifier });
+        const data = await request("GET", `${baseUrl}/auth/github?interface=cli&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${pkce.challenge}`);
+        writeCredentials({ apiUrl: baseUrl, state: data.data.state, codeVerifier: pkce.verifier });
         console.log("Opening GitHub OAuth...");
         console.log(data.data.authorize_url);
         if (!args.no_open) openBrowser(data.data.authorize_url);
