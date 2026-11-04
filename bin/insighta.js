@@ -202,6 +202,7 @@ Usage:
 
   insighta profiles list [--gender male] [--country NG] [--age-group adult]
   insighta profiles list [--min-age 25] [--max-age 40] [--sort-by age] [--order desc]
+  insighta profiles list [--page 2] [--limit 20]
   insighta profiles get <id>
   insighta profiles search "young males from nigeria"
   insighta profiles create --name "Harriet Tubman"
