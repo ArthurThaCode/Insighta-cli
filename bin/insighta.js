@@ -113,6 +113,11 @@ function normalizeAuth(data) {
   };
 }
 
+// Without expires_in the token counts as expired, so the next command refreshes it.
+function tokenExpiry(auth) {
+  return auth.expiresIn ? Date.now() + Number(auth.expiresIn) * 1000 : 0;
+}
+
 async function refreshIfNeeded(credentials) {
   if (!credentials.refreshToken) return credentials;
   if (Date.now() < (credentials.expiresAt || 0) - 20_000) return credentials;
@@ -126,7 +131,7 @@ async function refreshIfNeeded(credentials) {
       accessToken: auth.accessToken,
       refreshToken: auth.refreshToken,
       user: auth.user || credentials.user,
-      expiresAt: Date.now() + Number(auth.expiresIn || 180) * 1000,
+      expiresAt: tokenExpiry(auth),
     };
     writeCredentials(next);
     return next;
@@ -233,7 +238,7 @@ async function login(args, baseUrl) {
     apiUrl: baseUrl,
     accessToken: auth.accessToken,
     refreshToken: auth.refreshToken,
-    expiresAt: Date.now() + Number(auth.expiresIn || 180) * 1000,
+    expiresAt: tokenExpiry(auth),
     user: auth.user,
   });
   console.log(`Logged in as @${auth.user.login || auth.user.username}`);
