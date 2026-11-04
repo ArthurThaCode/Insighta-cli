@@ -31,4 +31,6 @@ insighta profiles export --format csv [--gender male] [--country NG]
 
 Login uses GitHub OAuth with PKCE: the CLI generates the verifier locally, sends only the challenge to the backend, and receives the callback on `http://127.0.0.1:53682/callback`.
 
+GitHub only accepts a `redirect_uri` that matches a callback URL registered on the OAuth app; for a loopback URL, only the port may differ. The web flow redirects to the backend and the CLI redirects to `http://127.0.0.1:53682/callback`, so an OAuth app configured only for the backend can reject the CLI login. The app must also accept the loopback callback, or the CLI needs a second OAuth app, which the backend does not support yet. This has not been tested against real GitHub.
+
 Credentials are stored at `~/.insighta/credentials.json`. Access tokens are refreshed automatically using the backend refresh endpoint, based on the `expires_in` it returns. API calls send `X-API-Version: 1`.
