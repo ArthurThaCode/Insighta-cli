@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
+const readline = require("readline");
 const { execFile } = require("child_process");
 
 const CONFIG_DIR = path.join(os.homedir(), ".insighta");
@@ -162,6 +163,17 @@ function buildProfileQuery(args) {
   return query.toString();
 }
 
+function confirm(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+    rl.on("close", () => resolve(false));
+  });
+}
+
 function spinner(message) {
   process.stdout.write(`${message}...`);
   return () => process.stdout.write(" done\n");
@@ -193,6 +205,7 @@ Usage:
   insighta profiles get <id>
   insighta profiles search "young males from nigeria"
   insighta profiles create --name "Harriet Tubman"
+  insighta profiles delete <id> [--yes]
   insighta profiles export --format csv [--gender male] [--country NG]
 `);
 }
@@ -302,6 +315,19 @@ async function main() {
     const data = await authedRequest("POST", "/api/v1/profiles", { args, body: { name: args.name } });
     done();
     console.log(JSON.stringify(data.data, null, 2));
+    return;
+  }
+
+  if (group === "delete") {
+    if (!actionOrId) throw new Error("profiles delete requires an id");
+    if (!args.yes && !(await confirm(`Delete profile ${actionOrId}? [y/N] `))) {
+      console.log("Cancelled.");
+      return;
+    }
+    const done = spinner("Deleting profile");
+    await authedRequest("DELETE", `/api/v1/profiles/${encodeURIComponent(actionOrId)}`, { args });
+    done();
+    console.log("Deleted.");
     return;
   }
 
