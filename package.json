@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "insighta-cli",
   "version": "1.0.0",
   "description": "Command line interface for Insighta Labs+",
@@ -6,10 +6,23 @@
     "insighta": "./bin/insighta.js"
   },
   "scripts": {
-    "check": "node --check bin/insighta.js"
+    "check": "node --check bin/insighta.js",
+    "lint": "eslint .",
+    "test": "node --test \"tests/*.test.js\""
   },
-  "keywords": ["insighta", "cli"],
+  "keywords": [
+    "insighta",
+    "cli"
+  ],
   "author": "",
   "license": "ISC",
-  "type": "commonjs"
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0"
+  }
 }

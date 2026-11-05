@@ -3,9 +3,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
+const readline = require("readline");
 const { execFile } = require("child_process");
 
 const CONFIG_DIR = path.join(os.homedir(), ".insighta");
@@ -74,6 +76,12 @@ function request(method, urlString, { token, body, headers = {} } = {}) {
   });
 }
 
+function generatePkce() {
+  const verifier = crypto.randomBytes(48).toString("base64url");
+  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
@@ -106,6 +114,11 @@ function normalizeAuth(data) {
   };
 }
 
+// Without expires_in the token counts as expired, so the next command refreshes it.
+function tokenExpiry(auth) {
+  return auth.expiresIn ? Date.now() + Number(auth.expiresIn) * 1000 : 0;
+}
+
 async function refreshIfNeeded(credentials) {
   if (!credentials.refreshToken) return credentials;
   if (Date.now() < (credentials.expiresAt || 0) - 20_000) return credentials;
@@ -119,7 +132,7 @@ async function refreshIfNeeded(credentials) {
       accessToken: auth.accessToken,
       refreshToken: auth.refreshToken,
       user: auth.user || credentials.user,
-      expiresAt: Date.now() + Number(auth.expiresIn || 180) * 1000,
+      expiresAt: tokenExpiry(auth),
     };
     writeCredentials(next);
     return next;
@@ -150,6 +163,17 @@ function buildProfileQuery(args) {
   return query.toString();
 }
 
+function confirm(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      resolve(/^y(es)?$/i.test(answer.trim()));
+      rl.close();
+    });
+    rl.on("close", () => resolve(false));
+  });
+}
+
 function spinner(message) {
   process.stdout.write(`${message}...`);
   return () => process.stdout.write(" done\n");
@@ -178,14 +202,17 @@ Usage:
 
   insighta profiles list [--gender male] [--country NG] [--age-group adult]
   insighta profiles list [--min-age 25] [--max-age 40] [--sort-by age] [--order desc]
+  insighta profiles list [--page 2] [--limit 20]
   insighta profiles get <id>
   insighta profiles search "young males from nigeria"
   insighta profiles create --name "Harriet Tubman"
+  insighta profiles delete <id> [--yes]
   insighta profiles export --format csv [--gender male] [--country NG]
 `);
 }
 
 async function login(args, baseUrl) {
+  const pkce = generatePkce();
   const server = http.createServer();
   const callback = await new Promise((resolve, reject) => {
     server.on("request", (req, res) => {
@@ -203,8 +230,8 @@ async function login(args, baseUrl) {
     server.listen(CALLBACK_PORT, CALLBACK_HOST, async () => {
       try {
         const redirectUri = `http://${CALLBACK_HOST}:${CALLBACK_PORT}/callback`;
-        const data = await request("GET", `${baseUrl}/auth/github?interface=cli&redirect_uri=${encodeURIComponent(redirectUri)}`);
-        writeCredentials({ apiUrl: baseUrl, state: data.data.state, codeVerifier: data.data.code_verifier });
+        const data = await request("GET", `${baseUrl}/auth/github?interface=cli&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${pkce.challenge}`);
+        writeCredentials({ apiUrl: baseUrl, state: data.data.state, codeVerifier: pkce.verifier });
         console.log("Opening GitHub OAuth...");
         console.log(data.data.authorize_url);
         if (!args.no_open) openBrowser(data.data.authorize_url);
@@ -225,7 +252,7 @@ async function login(args, baseUrl) {
     apiUrl: baseUrl,
     accessToken: auth.accessToken,
     refreshToken: auth.refreshToken,
-    expiresAt: Date.now() + Number(auth.expiresIn || 180) * 1000,
+    expiresAt: tokenExpiry(auth),
     user: auth.user,
   });
   console.log(`Logged in as @${auth.user.login || auth.user.username}`);
@@ -289,6 +316,19 @@ async function main() {
     const data = await authedRequest("POST", "/api/v1/profiles", { args, body: { name: args.name } });
     done();
     console.log(JSON.stringify(data.data, null, 2));
+    return;
+  }
+
+  if (group === "delete") {
+    if (!actionOrId) throw new Error("profiles delete requires an id");
+    if (!args.yes && !(await confirm(`Delete profile ${actionOrId}? [y/N] `))) {
+      console.log("Cancelled.");
+      return;
+    }
+    const done = spinner("Deleting profile");
+    await authedRequest("DELETE", `/api/v1/profiles/${encodeURIComponent(actionOrId)}`, { args });
+    done();
+    console.log("Deleted.");
     return;
   }
 
